@@ -1,0 +1,224 @@
+---
+title: "Signals_ISI"
+author: "Caroline Fleming Ianniello"
+date: "2026-04-26"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r Data cleaning}
+# Libraries
+library(readxl)
+library(dplyr)
+library(purrr)
+library(stringr)
+library(lubridate)
+
+# 1. Load & Tidy Data -----------------------------------------
+file <- "/Users/carolineianniello/Seasonal_timing_striped_bass/ISI_SBI_Raw_Data.xlsx"
+sheets <- excel_sheets(file)
+
+# Use map_dfr instead of map to get a single tibble at the end
+clean_data <- map_dfr(sheets, function(sh) {
+  df <- read_excel(file, sheet = sh, col_types = "text")
+  
+  # REMOVE completely empty columns
+  df <- df[, colSums(!is.na(df)) > 0]
+  
+  n <- ncol(df)
+  groups <- split(seq_len(n), ceiling(seq_len(n) / 3))
+  
+  bind_rows(lapply(groups, function(cols) {
+    if (length(cols) < 3) return(NULL)
+    
+    sub <- df[, cols]
+    colnames(sub) <- c("Tag_ID", "datetime", "Bits")
+    
+    sub %>%
+      filter(
+        !is.na(Tag_ID),
+        !str_detect(Tag_ID, "Tag_ID|Date"),
+        !is.na(datetime),
+        datetime != ""
+      ) %>%
+      mutate(
+        datetime = str_squish(datetime),
+        datetime = ifelse(
+          str_detect(datetime, "^\\d+(\\.\\d+)?$"),
+          as.character(as.POSIXct(as.numeric(datetime)*86400,
+                                 origin="1899-12-30", tz="UTC")),
+          datetime
+        ),
+        Bits = suppressWarnings(as.numeric(Bits)),
+        datetime = suppressWarnings(
+          parse_date_time(
+            datetime,
+            orders = c("mdy HM", "mdy HMS", "ymd HM", "ymd HMS"),
+            tz = "UTC"
+          )
+        )
+      )
+  })) %>%
+  mutate(year = sh)
+})
+
+# 2. QA diagnostic: Did all rows parse?
+cat("\nALL CLEAN DATA BEFORE FILTERING:\n")
+print(clean_data)
+cat("\nYEAR TABLE:\n")
+print(table(clean_data$year))
+cat("\nDATETIME NAs by year:\n")
+print(table(clean_data$year, is.na(clean_data$datetime)))
+
+# 2. Remove Serial Date/Junk Rows ------------------------------
+min_ok_date <- as.POSIXct("2019-01-01", tz = "UTC")
+clean_data_before_filter <- clean_data
+
+clean_data <- clean_data %>%
+  filter(!is.na(datetime)) %>%
+  filter(datetime > min_ok_date) %>%
+  arrange(year, Tag_ID, datetime)
+
+# What rows got dropped? QA!
+dropped_rows <- anti_join(clean_data_before_filter, clean_data, by = c("Tag_ID", "datetime", "Bits", "year"))
+cat("\nRows dropped by filter:\n")
+print(dropped_rows)
+
+# 3. Calculate Intervals ---------------------------------------
+intervals <- clean_data %>%
+  group_by(year, Tag_ID) %>%
+  mutate(diff_min = as.numeric(difftime(datetime, lag(datetime), units = "mins"))) %>%
+  filter(!is.na(diff_min), diff_min > 0)
+
+summary_stats <- intervals %>%
+  group_by(year, Tag_ID) %>%   # Now by year!
+  summarise(
+    mean_interval = mean(diff_min),
+    median_interval = median(diff_min),
+    min_interval = min(diff_min),
+    max_interval = max(diff_min),
+    .groups = "drop"
+  )
+
+overall <- summary_stats %>%
+  summarise(
+    min_mean = min(mean_interval),
+    max_mean = max(mean_interval),
+    median_mean = median(mean_interval)
+  )
+
+# 4. Sanity/Summary Output -------------------------------------
+cat("\nDate range for detections:\n")
+print(range(clean_data$datetime))
+cat("\nDistribution of all positive ISI (min):\n")
+print(summary(intervals$diff_min))
+cat("\nSummary table (per-fish mean ISI range & median):\n")
+print(overall)
+cat("\nPer-fish, per-year summary:\n")
+print(summary_stats)
+
+# 5. Plot for manuscript/data check -----------------
+hist(summary_stats$mean_interval,
+     main = "Average Inter-Signal Interval per Fish",
+     xlab = "Mean ISI (min)")
+```
+
+```{r histogram for all fish}
+hist(intervals$diff_min[intervals$diff_min < 60],  # for example, only intervals < 500 min
+     breaks = 100,
+     main = "Intervals (<60 min)",
+     xlab = "Interval (minutes)",
+     col = "skyblue")
+
+intervals <- intervals %>%
+  left_join(clean_data %>% select(Tag_ID, datetime, year), by = c("Tag_ID", "datetime"))
+library(ggplot2)
+ggplot(intervals %>% filter(diff_min < 60), aes(x = diff_min)) +
+  geom_histogram(binwidth = 1, fill = "skyblue", color = "black") +
+  facet_wrap(~year) +
+  labs(title = "Inter-signal Interval Distribution (<60 min) by Year",
+       x = "Interval (minutes)", y = "Count") +
+  theme_bw()
+
+
+```
+
+```{r summary stats}
+# Remove extreme values (e.g., seasonal gaps) if desired:
+# intervals_use <- intervals %>% filter(diff_min < 500) # Optional
+
+intervals_use <- intervals # Or filter as above
+
+n <- sum(!is.na(intervals_use$diff_min))
+mu <- mean(intervals_use$diff_min, na.rm = TRUE)
+sd_isi <- sd(intervals_use$diff_min, na.rm = TRUE)
+sem <- sd_isi / sqrt(n)
+med <- median(intervals_use$diff_min, na.rm = TRUE)
+min_isi <- min(intervals_use$diff_min, na.rm = TRUE)
+max_isi <- max(intervals_use$diff_min, na.rm = TRUE)
+q1 <- quantile(intervals_use$diff_min, 0.25, na.rm = TRUE)
+q3 <- quantile(intervals_use$diff_min, 0.75, na.rm = TRUE)
+
+cat(
+  sprintf(
+    "n = %d\nMean = %.2f min\nSD = %.2f min\nSEM = %.2f min\nMedian = %.2f min\nQ1 = %.2f min\nQ3 = %.2f min\nMin = %.2f min\nMax = %.2f min\n",
+    n, mu, sd_isi, sem, med, q1, q3, min_isi, max_isi
+  )
+)
+
+#percentage of intervals under 20 minutes
+# Count number and percent of intervals under 20 minutes (excluding NAs)
+n_total <- sum(!is.na(intervals$diff_min))
+n_under_20 <- sum(intervals$diff_min < 20, na.rm = TRUE)
+pct_under_20 <- 100 * n_under_20 / n_total
+
+cat(sprintf(
+  "%d of %d intervals (%.1f%%) are under 20 minutes\n",
+  n_under_20, n_total, pct_under_20
+))
+```
+
+```{r}
+summary_stats <- intervals %>%
+  group_by(Tag_ID) %>%
+  summarise(
+    mean_isi = mean(diff_min, na.rm = TRUE)
+  )
+min_mean <- min(summary_stats$mean_isi, na.rm = TRUE)
+max_mean <- max(summary_stats$mean_isi, na.rm = TRUE)
+median_mean <- median(summary_stats$mean_isi, na.rm = TRUE)
+
+cat(sprintf(
+  "Per-fish mean ISI: Range %.1f to %.1f min (median: %.1f min)\n",
+  min_mean, max_mean, median_mean
+))
+```
+
+
+```{r different visualizations}
+library(ggplot2)
+
+ggplot(clean_data, aes(x = datetime, y = Tag_ID)) +
+  geom_point(alpha = 0.4, size = 1, color = "blue") +
+  theme_bw() +
+  labs(title = "Detection Timeline for Each Fish",
+       x = "Datetime", y = "Tag_ID")
+
+ggplot(intervals %>% mutate(year=factor(year)), aes(x=diff_min)) +
+  geom_histogram(binwidth=2, fill="skyblue", color="black") +
+  facet_wrap(~year) +
+  labs(title="ISI Distribution by Year", x="Interval (min)")
+
+clean_data %>%
+  mutate(hour = hour(datetime)) %>%
+  ggplot(aes(x = hour)) +
+  geom_histogram(binwidth = 1, fill = "gold", color = "black") +
+  labs(title="Detection Frequency by Hour", x="Hour of Day", y="Count")
+
+
+```
+
+
+
