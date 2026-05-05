@@ -7,6 +7,7 @@ editor_options:
   chunk_output_type: console
 ---
 
+# The purpose of this script is to evaluate the intersignal intervals for striped bass acoustic detections in Eel Pond, MA
 
 ```{r Data cleaning}
 # Libraries
@@ -20,7 +21,7 @@ library(lubridate)
 file <- "/Users/carolineianniello/Seasonal_timing_striped_bass/ISI_SBI_Raw_Data.xlsx"
 sheets <- excel_sheets(file)
 
-# Use map_dfr instead of map to get a single tibble at the end
+# Use map_dfr to get a single tibble at the end
 clean_data <- map_dfr(sheets, function(sh) {
   df <- read_excel(file, sheet = sh, col_types = "text")
   
@@ -72,7 +73,7 @@ print(table(clean_data$year))
 cat("\nDATETIME NAs by year:\n")
 print(table(clean_data$year, is.na(clean_data$datetime)))
 
-# 2. Remove Serial Date/Junk Rows ------------------------------
+# 2. Remove data before 2019 (before analyses) ------------------------------
 min_ok_date <- as.POSIXct("2019-01-01", tz = "UTC")
 clean_data_before_filter <- clean_data
 
@@ -81,7 +82,7 @@ clean_data <- clean_data %>%
   filter(datetime > min_ok_date) %>%
   arrange(year, Tag_ID, datetime)
 
-# What rows got dropped? QA!
+# Investigate what rows were dropped
 dropped_rows <- anti_join(clean_data_before_filter, clean_data, by = c("Tag_ID", "datetime", "Bits", "year"))
 cat("\nRows dropped by filter:\n")
 print(dropped_rows)
@@ -109,7 +110,7 @@ overall <- summary_stats %>%
     median_mean = median(mean_interval)
   )
 
-# 4. Sanity/Summary Output -------------------------------------
+# 4. Summary Output -------------------------------------
 cat("\nDate range for detections:\n")
 print(range(clean_data$datetime))
 cat("\nDistribution of all positive ISI (min):\n")
@@ -119,14 +120,15 @@ print(overall)
 cat("\nPer-fish, per-year summary:\n")
 print(summary_stats)
 
-# 5. Plot for manuscript/data check -----------------
+# 5. Histrogram -----------------
 hist(summary_stats$mean_interval,
      main = "Average Inter-Signal Interval per Fish",
      xlab = "Mean ISI (min)")
 ```
 
 ```{r histogram for all fish}
-hist(intervals$diff_min[intervals$diff_min < 60],  # for example, only intervals < 500 min
+#Histogram for individuals with ISI under 60 minutes
+hist(intervals$diff_min[intervals$diff_min < 60],  
      breaks = 100,
      main = "Intervals (<60 min)",
      xlab = "Interval (minutes)",
@@ -147,9 +149,8 @@ ggplot(intervals %>% filter(diff_min < 60), aes(x = diff_min)) +
 
 ```{r summary stats}
 # Remove extreme values (e.g., seasonal gaps) if desired:
-# intervals_use <- intervals %>% filter(diff_min < 500) # Optional
 
-intervals_use <- intervals # Or filter as above
+intervals_use <- intervals 
 
 n <- sum(!is.na(intervals_use$diff_min))
 mu <- mean(intervals_use$diff_min, na.rm = TRUE)
@@ -181,6 +182,7 @@ cat(sprintf(
 ```
 
 ```{r}
+# Per fish mean ISI
 summary_stats <- intervals %>%
   group_by(Tag_ID) %>%
   summarise(
@@ -195,30 +197,3 @@ cat(sprintf(
   min_mean, max_mean, median_mean
 ))
 ```
-
-
-```{r different visualizations}
-library(ggplot2)
-
-ggplot(clean_data, aes(x = datetime, y = Tag_ID)) +
-  geom_point(alpha = 0.4, size = 1, color = "blue") +
-  theme_bw() +
-  labs(title = "Detection Timeline for Each Fish",
-       x = "Datetime", y = "Tag_ID")
-
-ggplot(intervals %>% mutate(year=factor(year)), aes(x=diff_min)) +
-  geom_histogram(binwidth=2, fill="skyblue", color="black") +
-  facet_wrap(~year) +
-  labs(title="ISI Distribution by Year", x="Interval (min)")
-
-clean_data %>%
-  mutate(hour = hour(datetime)) %>%
-  ggplot(aes(x = hour)) +
-  geom_histogram(binwidth = 1, fill = "gold", color = "black") +
-  labs(title="Detection Frequency by Hour", x="Hour of Day", y="Count")
-
-
-```
-
-
-
