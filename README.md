@@ -1,1 +1,0 @@
-# seasonal_timing_striped_bass
